@@ -194,6 +194,10 @@ async function handleMessage(request, sender) {
   switch (request.type) {
     case 'INIT': {
       const client = await initClient();
+      // Also join current tab's channel if we have one
+      if (client && currentTabUrl) {
+        await autoJoinChannel(currentTabUrl);
+      }
       return {
         publicKey: client?.publicKey || null,
         userName: userName
@@ -295,6 +299,19 @@ async function handleMessage(request, sender) {
     case 'POPUP_OPENED': {
       popupOpen = true;
       clearUnread();
+      // Ensure we're joined to the current tab's channel
+      if (currentTabUrl) {
+        await autoJoinChannel(currentTabUrl);
+      } else {
+        // Try to get current tab URL if we don't have it
+        try {
+          const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+          if (tabs[0]?.url) {
+            currentTabId = tabs[0].id;
+            await autoJoinChannel(tabs[0].url);
+          }
+        } catch {}
+      }
       return { success: true };
     }
 
