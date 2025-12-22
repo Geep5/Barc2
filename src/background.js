@@ -142,6 +142,10 @@ async function initClient(privateKey = null) {
     broadcastToAll({ type: 'PRESENCE_UPDATE', users });
   });
 
+  nostrClient.onGlobalActivity((activity) => {
+    broadcastToAll({ type: 'GLOBAL_ACTIVITY', activity });
+  });
+
   return nostrClient;
 }
 
@@ -268,7 +272,14 @@ async function handleMessage(request, sender) {
         url: currentTabUrl,
         users: nostrClient?.getActiveUsers() || [],
         publicKey: nostrClient?.publicKey || null,
-        unreadCount: unreadCount
+        unreadCount: unreadCount,
+        globalActivity: nostrClient?.getGlobalActivity() || []
+      };
+    }
+
+    case 'GET_GLOBAL_ACTIVITY': {
+      return {
+        activity: nostrClient?.getGlobalActivity() || []
       };
     }
 

@@ -42,11 +42,19 @@
 
     <!-- Main chat screen -->
     <div id="chat-screen" class="screen hidden">
-      <!-- Page info bar -->
-      <div class="page-info">
-        <span class="page-icon">🌐</span>
-        <span id="page-url" class="page-url">Loading...</span>
+      <!-- Tab bar for Chat/Activity -->
+      <div class="tab-bar">
+        <button id="tab-chat" class="tab active">Chat</button>
+        <button id="tab-activity" class="tab">Activity</button>
       </div>
+
+      <!-- Chat view -->
+      <div id="chat-view" class="tab-content">
+        <!-- Page info bar -->
+        <div class="page-info">
+          <span class="page-icon">🌐</span>
+          <span id="page-url" class="page-url">Loading...</span>
+        </div>
 
       <!-- Users bar -->
       <div class="users-bar">
@@ -77,6 +85,17 @@
         <button id="video-call-btn" class="btn icon" title="Video call (coming soon)" disabled>
           📹
         </button>
+      </div>
+      </div>
+
+      <!-- Activity view -->
+      <div id="activity-view" class="tab-content hidden">
+        <div class="activity-header">
+          <span>People browsing nearby</span>
+        </div>
+        <div id="activity-list" class="activity-list">
+          <div class="no-activity">No activity yet - browse some pages!</div>
+        </div>
       </div>
 
       <!-- Settings toggle (inside chat screen so it doesn't overlap setup) -->

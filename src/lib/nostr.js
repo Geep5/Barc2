@@ -275,9 +275,12 @@ class BarcNostrClient {
     this.privateKey = null;
     this.publicKey = null;
     this.currentChannelId = null;
+    this.currentUrl = null;
     this.messageCallback = null;
     this.presenceCallback = null;
+    this.globalActivityCallback = null;
     this.users = new Map(); // pubkey -> { name, lastSeen }
+    this.globalActivity = new Map(); // url -> { users: Map, lastUpdate }
   }
 
   async init(savedPrivateKey = null) {
@@ -300,14 +303,99 @@ class BarcNostrClient {
       }
     }
 
+    // Subscribe to global presence events to see activity across all URLs
+    this.subscribeToGlobalActivity();
+
     return { privateKey: this.privateKey, publicKey: this.publicKey };
   }
 
+  subscribeToGlobalActivity() {
+    // Subscribe to ALL presence events (kind 10042) to see where people are
+    const filters = [
+      {
+        kinds: [10042], // Presence events
+        since: Math.floor(Date.now() / 1000) - 300 // Last 5 min
+      }
+    ];
+
+    for (const relay of this.relays) {
+      relay.subscribe('barc-global', filters, (event) => {
+        this.handleGlobalPresence(event);
+      });
+    }
+  }
+
+  handleGlobalPresence(event) {
+    try {
+      const data = JSON.parse(event.content);
+      const url = data.url;
+      if (!url) return;
+
+      // Get or create activity entry for this URL
+      if (!this.globalActivity.has(url)) {
+        this.globalActivity.set(url, { users: new Map(), lastUpdate: 0 });
+      }
+
+      const activity = this.globalActivity.get(url);
+      activity.users.set(event.pubkey, {
+        name: data.name || event.pubkey.slice(0, 8),
+        lastSeen: event.created_at * 1000
+      });
+      activity.lastUpdate = Date.now();
+
+      // Notify callback
+      if (this.globalActivityCallback) {
+        this.globalActivityCallback(this.getGlobalActivity());
+      }
+    } catch {}
+  }
+
+  getGlobalActivity() {
+    const now = Date.now();
+    const active = [];
+
+    for (const [url, activity] of this.globalActivity) {
+      // Count active users (seen in last 5 min)
+      let activeCount = 0;
+      const activeUsers = [];
+
+      for (const [pubkey, data] of activity.users) {
+        if (now - data.lastSeen < 300000) {
+          activeCount++;
+          activeUsers.push({
+            pubkey,
+            name: data.name,
+            isYou: pubkey === this.publicKey
+          });
+        }
+      }
+
+      if (activeCount > 0) {
+        active.push({
+          url,
+          userCount: activeCount,
+          users: activeUsers,
+          isCurrentPage: url === this.currentUrl
+        });
+      }
+    }
+
+    // Sort by user count descending
+    active.sort((a, b) => b.userCount - a.userCount);
+
+    return active;
+  }
+
+  onGlobalActivity(callback) {
+    this.globalActivityCallback = callback;
+  }
+
   async joinChannel(url) {
+    this.currentUrl = url;
     this.currentChannelId = await urlToChannelId(url);
 
     // Subscribe to channel messages
-    // Using kind 42 (channel message) with 'u' tag for URL channel
+    // Using kind 42 (channel message) with 'd' tag for channel ID
     const filters = [
       {
         kinds: [42], // Channel message
@@ -395,8 +483,11 @@ class BarcNostrClient {
   async announcePresence(name = null) {
     if (!this.currentChannelId) return;
 
+    const displayName = name || `User-${this.publicKey.slice(0, 6)}`;
+
     const content = JSON.stringify({
-      name: name || `User-${this.publicKey.slice(0, 6)}`,
+      name: displayName,
+      url: this.currentUrl, // Include URL so others can see where we are
       action: 'join'
     });
 
@@ -413,9 +504,21 @@ class BarcNostrClient {
 
     // Also add self to users
     this.users.set(this.publicKey, {
-      name: name || `User-${this.publicKey.slice(0, 6)}`,
+      name: displayName,
       lastSeen: Date.now()
     });
+
+    // Update global activity for self
+    if (this.currentUrl) {
+      if (!this.globalActivity.has(this.currentUrl)) {
+        this.globalActivity.set(this.currentUrl, { users: new Map(), lastUpdate: 0 });
+      }
+      const activity = this.globalActivity.get(this.currentUrl);
+      activity.users.set(this.publicKey, {
+        name: displayName,
+        lastSeen: Date.now()
+      });
+    }
   }
 
   async sendMessage(content) {

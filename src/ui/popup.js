@@ -3,6 +3,7 @@
 class BarcPopup {
   constructor() {
     this.currentUrl = null;
+    this.globalActivity = [];
 
     // DOM elements
     this.setupScreen = document.getElementById('setup-screen');
@@ -13,6 +14,13 @@ class BarcPopup {
     this.generateKeyBtn = document.getElementById('generate-key-btn');
     this.importKeyInput = document.getElementById('import-key-input');
     this.importKeyBtn = document.getElementById('import-key-btn');
+
+    // Tab elements
+    this.tabChat = document.getElementById('tab-chat');
+    this.tabActivity = document.getElementById('tab-activity');
+    this.chatView = document.getElementById('chat-view');
+    this.activityView = document.getElementById('activity-view');
+    this.activityList = document.getElementById('activity-list');
 
     // Chat elements
     this.pageUrl = document.getElementById('page-url');
@@ -42,6 +50,10 @@ class BarcPopup {
     this.importKeyInput.addEventListener('keypress', (e) => {
       if (e.key === 'Enter') this.handleImportKey();
     });
+
+    // Tabs
+    this.tabChat.addEventListener('click', () => this.showTab('chat'));
+    this.tabActivity.addEventListener('click', () => this.showTab('activity'));
 
     // Chat
     this.sendBtn.addEventListener('click', () => this.sendMessage());
@@ -86,6 +98,7 @@ class BarcPopup {
       this.showScreen('chat');
       this.updateUI(status);
       this.updatePageInfo();
+      this.updateActivity(status.globalActivity || []);
     }
 
     // Update connection status
@@ -112,6 +125,13 @@ class BarcPopup {
     } else if (screen === 'settings') {
       this.settingsScreen.classList.remove('hidden');
     }
+  }
+
+  showTab(tab) {
+    this.tabChat.classList.toggle('active', tab === 'chat');
+    this.tabActivity.classList.toggle('active', tab === 'activity');
+    this.chatView.classList.toggle('hidden', tab !== 'chat');
+    this.activityView.classList.toggle('hidden', tab !== 'activity');
   }
 
   async handleGenerateKey() {
@@ -216,6 +236,9 @@ class BarcPopup {
       case 'PRESENCE_UPDATE':
         this.updateUsers(msg.users);
         break;
+      case 'GLOBAL_ACTIVITY':
+        this.updateActivity(msg.activity);
+        break;
       case 'TAB_CHANGED':
         this.currentUrl = msg.url;
         this.updatePageInfo();
@@ -276,6 +299,49 @@ class BarcPopup {
     }
 
     this.updateUsers(status.users);
+  }
+
+  updateActivity(activity) {
+    this.globalActivity = activity || [];
+
+    if (this.globalActivity.length === 0) {
+      this.activityList.innerHTML = '<div class="no-activity">No activity yet - browse some pages!</div>';
+      return;
+    }
+
+    this.activityList.innerHTML = this.globalActivity.map(item => {
+      let hostname = '';
+      let path = '';
+      try {
+        const url = new URL(item.url);
+        hostname = url.hostname;
+        path = url.pathname;
+      } catch {
+        hostname = item.url;
+      }
+
+      return `
+        <div class="activity-item ${item.isCurrentPage ? 'current' : ''}" data-url="${this.escapeHtml(item.url)}">
+          <div class="activity-url">
+            <div class="hostname">${this.escapeHtml(hostname)}</div>
+            <div class="path">${this.escapeHtml(path)}</div>
+          </div>
+          <div class="activity-count">
+            ${item.userCount} ${item.userCount === 1 ? 'person' : 'people'}
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    // Add click handlers to navigate to pages
+    this.activityList.querySelectorAll('.activity-item').forEach(el => {
+      el.addEventListener('click', () => {
+        const url = el.dataset.url;
+        if (url) {
+          chrome.tabs.create({ url });
+        }
+      });
+    });
   }
 
   async showSettings() {
