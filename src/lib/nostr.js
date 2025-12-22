@@ -4,7 +4,7 @@
 const DEFAULT_RELAYS = [
   'wss://relay.damus.io',
   'wss://nos.lol',
-  'wss://relay.nostr.band'
+  'wss://relay.primal.net'
 ];
 
 // Generate a random private key (32 bytes hex)
@@ -98,14 +98,23 @@ async function sha256(message) {
   return bytesToHex(new Uint8Array(hashBuffer));
 }
 
-// Schnorr signature (simplified BIP340)
+// Schnorr signature (BIP340)
 async function signSchnorr(messageHash, privateKeyHex) {
-  const d = BigInt('0x' + privateKeyHex);
-  const msgHash = BigInt('0x' + messageHash);
+  let d = BigInt('0x' + privateKeyHex);
 
-  // Generate deterministic k using hash of private key + message
-  const kData = privateKeyHex + messageHash;
-  const kHash = await sha256(kData);
+  // BIP340: If P.y is odd, negate d
+  const P = pointMultiply(d);
+  if (P[1] % 2n !== 0n) {
+    d = CURVE.n - d;
+  }
+  const pHex = P[0].toString(16).padStart(64, '0');
+
+  // Generate deterministic k using tagged hash
+  // aux_rand is zeros for simplicity
+  const auxRand = '0'.repeat(64);
+  const t = xorHex(d.toString(16).padStart(64, '0'), await taggedHash('BIP0340/aux', auxRand));
+  const kData = t + pHex + messageHash;
+  const kHash = await taggedHash('BIP0340/nonce', kData);
   let k = mod(BigInt('0x' + kHash), CURVE.n);
   if (k === 0n) k = 1n;
 
@@ -115,17 +124,35 @@ async function signSchnorr(messageHash, privateKeyHex) {
   }
 
   const rHex = R[0].toString(16).padStart(64, '0');
-  const P = pointMultiply(d);
-  const pHex = P[0].toString(16).padStart(64, '0');
 
   const eData = rHex + pHex + messageHash;
-  const eHash = await sha256(eData);
+  const eHash = await taggedHash('BIP0340/challenge', eData);
   const e = mod(BigInt('0x' + eHash), CURVE.n);
 
   const s = mod(k + e * d, CURVE.n);
   const sHex = s.toString(16).padStart(64, '0');
 
   return rHex + sHex;
+}
+
+// BIP340 tagged hash - hash(SHA256(tag) || SHA256(tag) || msg)
+async function taggedHash(tag, msgHex) {
+  const tagHash = await sha256(tag);
+  // Concatenate: tagHash (hex) + tagHash (hex) + msg (hex) -> all as bytes
+  const combined = hexToBytes(tagHash + tagHash + msgHex);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', combined);
+  return bytesToHex(new Uint8Array(hashBuffer));
+}
+
+// XOR two hex strings
+function xorHex(a, b) {
+  let result = '';
+  for (let i = 0; i < 64; i += 2) {
+    const byteA = parseInt(a.substr(i, 2), 16);
+    const byteB = parseInt(b.substr(i, 2), 16);
+    result += (byteA ^ byteB).toString(16).padStart(2, '0');
+  }
+  return result;
 }
 
 async function createEvent(privateKey, kind, content, tags = []) {
