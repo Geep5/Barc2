@@ -175,10 +175,19 @@ class NostrRelay {
 
   connect() {
     return new Promise((resolve, reject) => {
+      // Timeout after 5 seconds
+      const timeout = setTimeout(() => {
+        if (!this.connected) {
+          console.warn(`Connection timeout for relay: ${this.url}`);
+          reject(new Error('Connection timeout'));
+        }
+      }, 5000);
+
       try {
         this.ws = new WebSocket(this.url);
 
         this.ws.onopen = () => {
+          clearTimeout(timeout);
           this.connected = true;
           this.reconnectAttempts = 0;
           console.log(`Connected to relay: ${this.url}`);
@@ -186,12 +195,14 @@ class NostrRelay {
         };
 
         this.ws.onclose = () => {
+          clearTimeout(timeout);
           this.connected = false;
           console.log(`Disconnected from relay: ${this.url}`);
           this.attemptReconnect();
         };
 
         this.ws.onerror = (error) => {
+          clearTimeout(timeout);
           console.error(`Relay error (${this.url}):`, error);
           reject(error);
         };
@@ -200,6 +211,7 @@ class NostrRelay {
           this.handleMessage(msg.data);
         };
       } catch (error) {
+        clearTimeout(timeout);
         reject(error);
       }
     });

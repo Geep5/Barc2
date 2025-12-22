@@ -79,58 +79,64 @@ class BarcPopup {
   }
 
   async init() {
-    // Tell background popup is open (joins channel and clears unread badge)
-    const openResult = await this.sendToBackground({ type: 'POPUP_OPENED' });
+    try {
+      // Tell background popup is open (joins channel and clears unread badge)
+      const openResult = await this.sendToBackground({ type: 'POPUP_OPENED' }) || {};
 
-    // Initialize and get status
-    const initResult = await this.sendToBackground({ type: 'INIT' });
-    const status = await this.sendToBackground({ type: 'GET_STATUS' });
+      // Initialize and get status
+      await this.sendToBackground({ type: 'INIT' });
+      const status = await this.sendToBackground({ type: 'GET_STATUS' }) || {};
 
-    // Use URL from popup opened result, or status, or query directly
-    this.currentUrl = openResult.url || status.url;
+      // Use URL from popup opened result, or status, or query directly
+      this.currentUrl = openResult.url || status.url;
 
-    // If still no URL, try querying directly
-    if (!this.currentUrl || this.currentUrl.startsWith('chrome')) {
-      const urlResult = await this.sendToBackground({ type: 'GET_CURRENT_URL' });
-      if (urlResult.url && !urlResult.url.startsWith('chrome')) {
-        this.currentUrl = urlResult.url;
+      // If still no URL, try querying directly
+      if (!this.currentUrl || this.currentUrl.startsWith('chrome')) {
+        const urlResult = await this.sendToBackground({ type: 'GET_CURRENT_URL' }) || {};
+        if (urlResult.url && !urlResult.url.startsWith('chrome')) {
+          this.currentUrl = urlResult.url;
+        }
       }
-    }
 
-    // Check if user has a key set up
-    const { privateKey } = await chrome.storage.local.get(['privateKey']);
+      // Check if user has a key set up
+      const { privateKey } = await chrome.storage.local.get(['privateKey']);
 
-    if (!privateKey) {
+      if (!privateKey) {
+        this.showScreen('setup');
+      } else {
+        this.showScreen('chat');
+        this.updateUI(status);
+        this.updatePageInfo();
+        this.updateActivity(status.globalActivity || []);
+      }
+
+      // Update connection status
+      if (status.connected) {
+        this.connectionStatus.classList.add('connected');
+        this.connectionStatus.classList.remove('disconnected');
+      }
+
+      // Set pubkey in settings
+      if (status.publicKey) {
+        this.pubkeyDisplay.value = status.publicKey;
+      }
+    } catch (error) {
+      console.error('Popup init error:', error);
+      // Show setup screen as fallback
       this.showScreen('setup');
-    } else {
-      this.showScreen('chat');
-      this.updateUI(status);
-      this.updatePageInfo();
-      this.updateActivity(status.globalActivity || []);
-    }
-
-    // Update connection status
-    if (status.connected) {
-      this.connectionStatus.classList.add('connected');
-      this.connectionStatus.classList.remove('disconnected');
-    }
-
-    // Set pubkey in settings
-    if (status.publicKey) {
-      this.pubkeyDisplay.value = status.publicKey;
     }
   }
 
   showScreen(screen) {
-    this.setupScreen.classList.add('hidden');
-    this.chatScreen.classList.add('hidden');
-    this.settingsScreen.classList.add('hidden');
+    if (this.setupScreen) this.setupScreen.classList.add('hidden');
+    if (this.chatScreen) this.chatScreen.classList.add('hidden');
+    if (this.settingsScreen) this.settingsScreen.classList.add('hidden');
 
-    if (screen === 'setup') {
+    if (screen === 'setup' && this.setupScreen) {
       this.setupScreen.classList.remove('hidden');
-    } else if (screen === 'chat') {
+    } else if (screen === 'chat' && this.chatScreen) {
       this.chatScreen.classList.remove('hidden');
-    } else if (screen === 'settings') {
+    } else if (screen === 'settings' && this.settingsScreen) {
       this.settingsScreen.classList.remove('hidden');
     }
   }
