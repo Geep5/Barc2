@@ -1,14 +1,13 @@
 // Background service worker for Barc
-// Manages Nostr connections and coordinates between popup and content scripts
+// Manages Nostr connections and coordinates with dashboard
 
 import { BarcNostrClient, generatePrivateKey, getPublicKey } from './lib/nostr.js';
 
 let nostrClient = null;
-let currentTabUrl = null;
-let currentTabId = null;
+let currentChannelUrl = null; // URL of the channel we're currently joined to
 let userName = null;
 let unreadCount = 0;
-let popupOpen = false;
+let dashboardOpen = false;
 
 // Bech32 decoding for nsec keys
 const BECH32_ALPHABET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
@@ -130,17 +129,17 @@ async function initClient(privateKey = null) {
 
   // Set up event handlers
   nostrClient.onMessage((msg) => {
-    // Increment unread count if popup is closed and message isn't ours
-    if (!popupOpen && !msg.isOwn) {
+    // Increment unread count if dashboard is closed and message isn't ours
+    if (!dashboardOpen && !msg.isOwn) {
       unreadCount++;
       updateBadge();
     }
-    broadcastToAll({ type: 'NEW_MESSAGE', message: msg });
+    broadcastToAll({ type: 'NEW_MESSAGE', message: msg, url: currentChannelUrl });
   });
 
   nostrClient.onPresence((users) => {
     updateBadge();
-    broadcastToAll({ type: 'PRESENCE_UPDATE', users });
+    broadcastToAll({ type: 'PRESENCE_UPDATE', users, url: currentChannelUrl });
   });
 
   nostrClient.onGlobalActivity((activity) => {
@@ -148,8 +147,8 @@ async function initClient(privateKey = null) {
   });
 
   nostrClient.onDM((dm, otherPubkey) => {
-    // Increment unread if popup closed and not our own message
-    if (!popupOpen && !dm.isOwn) {
+    // Increment unread if dashboard closed and not our own message
+    if (!dashboardOpen && !dm.isOwn) {
       unreadCount++;
       updateBadge();
     }
@@ -159,21 +158,21 @@ async function initClient(privateKey = null) {
   return nostrClient;
 }
 
-// Auto-join channel for a URL
-async function autoJoinChannel(url) {
+// Join channel for a specific URL
+async function joinChannel(url) {
   if (!url || url.startsWith('chrome://') || url.startsWith('chrome-extension://')) {
-    return;
+    return { messages: [], users: [] };
   }
 
   const client = await initClient();
-  if (!client) return; // No key configured yet
+  if (!client) return { messages: [], users: [] }; // No key configured yet
 
   // Leave previous channel if different URL
-  if (currentTabUrl && currentTabUrl !== url) {
+  if (currentChannelUrl && currentChannelUrl !== url) {
     client.leaveChannel();
   }
 
-  currentTabUrl = url;
+  currentChannelUrl = url;
   const result = await client.joinChannel(url);
 
   if (userName) {
@@ -182,22 +181,34 @@ async function autoJoinChannel(url) {
 
   updateBadge();
 
-  // Return messages from relay
-  return result?.messages || [];
+  return {
+    messages: result?.messages || [],
+    users: client.getActiveUsers() || []
+  };
 }
 
-// Broadcast message to popup and active tab
+// Broadcast message to all extension pages (dashboard)
 async function broadcastToAll(message) {
-  // Send to popup
   chrome.runtime.sendMessage(message).catch(() => {});
-
-  // Send to content script in active tab
-  if (currentTabId) {
-    chrome.tabs.sendMessage(currentTabId, message).catch(() => {});
-  }
 }
 
-// Handle messages from popup and content scripts
+// Open dashboard tab when extension icon is clicked
+chrome.action.onClicked.addListener(async () => {
+  // Check if dashboard is already open
+  const dashboardUrl = chrome.runtime.getURL('src/ui/dashboard.html');
+  const tabs = await chrome.tabs.query({ url: dashboardUrl });
+
+  if (tabs.length > 0) {
+    // Focus existing dashboard tab
+    chrome.tabs.update(tabs[0].id, { active: true });
+    chrome.windows.update(tabs[0].windowId, { focused: true });
+  } else {
+    // Open new dashboard tab
+    chrome.tabs.create({ url: dashboardUrl });
+  }
+});
+
+// Handle messages from dashboard
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   handleMessage(request, sender).then(sendResponse);
   return true; // Keep channel open for async response
@@ -207,14 +218,16 @@ async function handleMessage(request, sender) {
   switch (request.type) {
     case 'INIT': {
       const client = await initClient();
-      // Also join current tab's channel if we have one
-      if (client && currentTabUrl) {
-        await autoJoinChannel(currentTabUrl);
-      }
       return {
         publicKey: client?.publicKey || null,
         userName: userName
       };
+    }
+
+    case 'DASHBOARD_OPENED': {
+      dashboardOpen = true;
+      clearUnread();
+      return { success: true };
     }
 
     case 'GENERATE_KEY': {
@@ -227,11 +240,6 @@ async function handleMessage(request, sender) {
 
         // Initialize client with new key
         await initClient(privateKey);
-
-        // Auto-join current tab's channel
-        if (currentTabUrl) {
-          await autoJoinChannel(currentTabUrl);
-        }
 
         return { success: true, publicKey };
       } catch (error) {
@@ -254,15 +262,15 @@ async function handleMessage(request, sender) {
         // Initialize client with imported key
         await initClient(parsed.privateKey);
 
-        // Auto-join current tab's channel
-        if (currentTabUrl) {
-          await autoJoinChannel(currentTabUrl);
-        }
-
         return { success: true, publicKey };
       } catch (error) {
         return { success: false, error: 'Invalid private key' };
       }
+    }
+
+    case 'JOIN_TAB_CHANNEL': {
+      const result = await joinChannel(request.url);
+      return result;
     }
 
     case 'SEND_MESSAGE': {
@@ -306,7 +314,7 @@ async function handleMessage(request, sender) {
       return {
         connected: nostrClient?.relays.some(r => r.connected) || false,
         channelId: nostrClient?.currentChannelId || null,
-        url: currentTabUrl,
+        url: currentChannelUrl,
         users: nostrClient?.getActiveUsers() || [],
         publicKey: nostrClient?.publicKey || null,
         unreadCount: unreadCount,
@@ -320,36 +328,14 @@ async function handleMessage(request, sender) {
       };
     }
 
-    case 'GET_CURRENT_URL': {
-      try {
-        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-        return { url: tabs[0]?.url || null };
-      } catch {
-        return { url: null };
+    case 'GET_ALL_TAB_COUNTS': {
+      // Get user counts for all URLs from global activity
+      const counts = {};
+      const activity = nostrClient?.getGlobalActivity() || [];
+      for (const item of activity) {
+        counts[item.url] = item.userCount;
       }
-    }
-
-    case 'POPUP_OPENED': {
-      popupOpen = true;
-      clearUnread();
-      let messages = [];
-      // Always get current tab URL fresh - don't rely on cached value
-      try {
-        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (tabs[0]?.url && !tabs[0].url.startsWith('chrome://') && !tabs[0].url.startsWith('chrome-extension://')) {
-          currentTabId = tabs[0].id;
-          currentTabUrl = tabs[0].url;
-          messages = await autoJoinChannel(tabs[0].url);
-        }
-      } catch (e) {
-        console.error('Failed to get current tab:', e);
-      }
-      return { success: true, url: currentTabUrl, messages };
-    }
-
-    case 'POPUP_CLOSED': {
-      popupOpen = false;
-      return { success: true };
+      return { counts };
     }
 
     default:
@@ -357,49 +343,14 @@ async function handleMessage(request, sender) {
   }
 }
 
-// Listen for tab activation - auto-join that tab's channel
-chrome.tabs.onActivated.addListener(async (activeInfo) => {
-  try {
-    currentTabId = activeInfo.tabId;
-    const tab = await chrome.tabs.get(activeInfo.tabId);
-    if (tab.url) {
-      const messages = await autoJoinChannel(tab.url);
-      broadcastToAll({ type: 'TAB_CHANGED', url: tab.url, messages });
-    }
-  } catch {}
-});
-
-// Listen for URL changes in the active tab - auto-join new channel
-chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
-  if (changeInfo.url && tab.active) {
-    currentTabId = tabId;
-    const messages = await autoJoinChannel(changeInfo.url);
-    broadcastToAll({ type: 'TAB_CHANGED', url: changeInfo.url, messages });
-  }
-});
-
-// Initialize on startup - join current tab's channel
+// Initialize client on startup
 chrome.runtime.onStartup.addListener(async () => {
-  try {
-    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (tabs[0]?.url) {
-      currentTabId = tabs[0].id;
-      currentTabUrl = tabs[0].url;
-      await autoJoinChannel(tabs[0].url);
-    }
-  } catch {}
+  await initClient();
 });
 
 // Also init when extension is installed/updated
 chrome.runtime.onInstalled.addListener(async () => {
-  try {
-    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (tabs[0]?.url) {
-      currentTabId = tabs[0].id;
-      currentTabUrl = tabs[0].url;
-      await autoJoinChannel(tabs[0].url);
-    }
-  } catch {}
+  await initClient();
 });
 
 // Keep service worker alive with periodic alarm
